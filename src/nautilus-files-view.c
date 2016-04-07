@@ -30,6 +30,7 @@
 #include "nautilus-application.h"
 #include "nautilus-error-reporting.h"
 #include "nautilus-floating-bar.h"
+#include "nautilus-icon-view.h"
 #include "nautilus-list-view.h"
 #include "nautilus-canvas-view.h"
 #include "nautilus-mime-actions.h"
@@ -8270,7 +8271,7 @@ nautilus_files_view_new (guint                id,
 
         switch (id) {
         case NAUTILUS_VIEW_GRID_ID:
-                view = nautilus_canvas_view_new (slot);
+                view = nautilus_icon_view_new (slot);
         break;
         case NAUTILUS_VIEW_LIST_ID:
                 view = nautilus_list_view_new (slot);

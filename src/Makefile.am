@@ -182,6 +182,8 @@ nautilus_no_main_sources = \
 	nautilus-floating-bar.h			\
 	nautilus-freedesktop-dbus.c		\
 	nautilus-freedesktop-dbus.h		\
+	nautilus-icon-view.c			\
+	nautilus-icon-view.h			\
 	nautilus-image-properties-page.c	\
 	nautilus-image-properties-page.h	\
 	nautilus-list-model.c			\
