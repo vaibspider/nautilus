@@ -35,9 +35,10 @@
 #define DEBUG_FLAG NAUTILUS_DEBUG_UNDO
 #include "nautilus-debug.h"
 
-enum {
-	SIGNAL_UNDO_CHANGED,
-	NUM_SIGNALS,
+enum
+{
+    SIGNAL_UNDO_CHANGED,
+    NUM_SIGNALS,
 };
 
 static guint signals[NUM_SIGNALS] = { 0, };
@@ -46,13 +47,13 @@ G_DEFINE_TYPE (NautilusFileUndoManager, nautilus_file_undo_manager, G_TYPE_OBJEC
 
 struct _NautilusFileUndoManagerPrivate
 {
-	NautilusFileUndoInfo *info;
-	NautilusFileUndoManagerState state;
-	NautilusFileUndoManagerState last_state;
+    NautilusFileUndoInfo *info;
+    NautilusFileUndoManagerState state;
+    NautilusFileUndoManagerState last_state;
 
-	guint is_operating : 1;
+    guint is_operating : 1;
 
-	gulong trash_signal_id;
+    gulong trash_signal_id;
 };
 
 static NautilusFileUndoManager *undo_singleton = NULL;
@@ -60,213 +61,228 @@ static NautilusFileUndoManager *undo_singleton = NULL;
 static NautilusFileUndoManager *
 get_singleton (void)
 {
-	if (undo_singleton == NULL) {
-		undo_singleton = g_object_new (NAUTILUS_TYPE_FILE_UNDO_MANAGER, NULL);
-		g_object_add_weak_pointer (G_OBJECT (undo_singleton), (gpointer) &undo_singleton);
-	}
+    if (undo_singleton == NULL)
+    {
+        undo_singleton = g_object_new (NAUTILUS_TYPE_FILE_UNDO_MANAGER, NULL);
+        g_object_add_weak_pointer (G_OBJECT (undo_singleton), (gpointer) & undo_singleton);
+    }
 
-	return undo_singleton;
+    return undo_singleton;
 }
 
 static void
 file_undo_manager_clear (NautilusFileUndoManager *self)
 {
-	g_clear_object (&self->priv->info);
-	self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_NONE;
+    g_clear_object (&self->priv->info);
+    self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_NONE;
 }
 
 static void
 trash_state_changed_cb (NautilusTrashMonitor *monitor,
-			gboolean is_empty,
-			gpointer user_data)
+                        gboolean              is_empty,
+                        gpointer              user_data)
 {
-	NautilusFileUndoManager *self = user_data;
+    NautilusFileUndoManager *self = user_data;
 
-	/* A trash operation cannot be undone if the trash is empty */
-	if (is_empty &&
-	    self->priv->state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO &&
-	    NAUTILUS_IS_FILE_UNDO_INFO_TRASH (self->priv->info)) {
-		file_undo_manager_clear (self);
-		g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
-	}
+    /* A trash operation cannot be undone if the trash is empty */
+    if (is_empty &&
+        self->priv->state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO &&
+        NAUTILUS_IS_FILE_UNDO_INFO_TRASH (self->priv->info))
+    {
+        file_undo_manager_clear (self);
+        g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
+    }
 }
 
 static void
-nautilus_file_undo_manager_init (NautilusFileUndoManager * self)
+nautilus_file_undo_manager_init (NautilusFileUndoManager *self)
 {
-	NautilusFileUndoManagerPrivate *priv = self->priv = 
-		G_TYPE_INSTANCE_GET_PRIVATE (self, 
-					     NAUTILUS_TYPE_FILE_UNDO_MANAGER, 
-					     NautilusFileUndoManagerPrivate);
+    NautilusFileUndoManagerPrivate *priv = self->priv =
+                                               G_TYPE_INSTANCE_GET_PRIVATE (self,
+                                                                            NAUTILUS_TYPE_FILE_UNDO_MANAGER,
+                                                                            NautilusFileUndoManagerPrivate);
 
-	priv->trash_signal_id = g_signal_connect (nautilus_trash_monitor_get (),
-						  "trash-state-changed",
-						  G_CALLBACK (trash_state_changed_cb), self);
+    priv->trash_signal_id = g_signal_connect (nautilus_trash_monitor_get (),
+                                              "trash-state-changed",
+                                              G_CALLBACK (trash_state_changed_cb), self);
 }
 
 static void
-nautilus_file_undo_manager_finalize (GObject * object)
+nautilus_file_undo_manager_finalize (GObject *object)
 {
-	NautilusFileUndoManager *self = NAUTILUS_FILE_UNDO_MANAGER (object);
-	NautilusFileUndoManagerPrivate *priv = self->priv;
+    NautilusFileUndoManager *self = NAUTILUS_FILE_UNDO_MANAGER (object);
+    NautilusFileUndoManagerPrivate *priv = self->priv;
 
-	if (priv->trash_signal_id != 0) {
-		g_signal_handler_disconnect (nautilus_trash_monitor_get (),
-					     priv->trash_signal_id);
-		priv->trash_signal_id = 0;
-	}
+    if (priv->trash_signal_id != 0)
+    {
+        g_signal_handler_disconnect (nautilus_trash_monitor_get (),
+                                     priv->trash_signal_id);
+        priv->trash_signal_id = 0;
+    }
 
-	file_undo_manager_clear (self);
+    file_undo_manager_clear (self);
 
-	G_OBJECT_CLASS (nautilus_file_undo_manager_parent_class)->finalize (object);
+    G_OBJECT_CLASS (nautilus_file_undo_manager_parent_class)->finalize (object);
 }
 
 static void
 nautilus_file_undo_manager_class_init (NautilusFileUndoManagerClass *klass)
 {
-	GObjectClass *oclass;
+    GObjectClass *oclass;
 
-	oclass = G_OBJECT_CLASS (klass);
+    oclass = G_OBJECT_CLASS (klass);
 
-	oclass->finalize = nautilus_file_undo_manager_finalize;
+    oclass->finalize = nautilus_file_undo_manager_finalize;
 
-	signals[SIGNAL_UNDO_CHANGED] =
-		g_signal_new ("undo-changed",
-			      G_TYPE_FROM_CLASS (klass),
-			      G_SIGNAL_RUN_LAST,
-			      0, NULL, NULL,
-			      g_cclosure_marshal_VOID__VOID,
-			      G_TYPE_NONE, 0);
+    signals[SIGNAL_UNDO_CHANGED] =
+        g_signal_new ("undo-changed",
+                      G_TYPE_FROM_CLASS (klass),
+                      G_SIGNAL_RUN_LAST,
+                      0, NULL, NULL,
+                      g_cclosure_marshal_VOID__VOID,
+                      G_TYPE_NONE, 0);
 
-	g_type_class_add_private (klass, sizeof (NautilusFileUndoManagerPrivate));
+    g_type_class_add_private (klass, sizeof (NautilusFileUndoManagerPrivate));
 }
 
 static void
-undo_info_apply_ready (GObject *source,
-		       GAsyncResult *res,
-		       gpointer user_data)
+undo_info_apply_ready (GObject      *source,
+                       GAsyncResult *res,
+                       gpointer      user_data)
 {
-	NautilusFileUndoManager *self = user_data;
-	NautilusFileUndoInfo *info = NAUTILUS_FILE_UNDO_INFO (source);
-	gboolean success, user_cancel;
+    NautilusFileUndoManager *self = user_data;
+    NautilusFileUndoInfo *info = NAUTILUS_FILE_UNDO_INFO (source);
+    gboolean success, user_cancel;
 
-	success = nautilus_file_undo_info_apply_finish (info, res, &user_cancel, NULL);
+    success = nautilus_file_undo_info_apply_finish (info, res, &user_cancel, NULL);
 
-	self->priv->is_operating = FALSE;
+    self->priv->is_operating = FALSE;
 
-	/* just return in case we got another another operation set */
-	if ((self->priv->info != NULL) &&
-	    (self->priv->info != info)) {
-		return;
-	}
+    /* just return in case we got another another operation set */
+    if ((self->priv->info != NULL) &&
+        (self->priv->info != info))
+    {
+        return;
+    }
 
-	if (success) {
-		if (self->priv->last_state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO) {
-			self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO;
-		} else if (self->priv->last_state == NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO) {
-			self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
-		}
+    if (success)
+    {
+        if (self->priv->last_state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO)
+        {
+            self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO;
+        }
+        else if (self->priv->last_state == NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO)
+        {
+            self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
+        }
 
-		self->priv->info = g_object_ref (info);
-	} else if (user_cancel) {
-		self->priv->state = self->priv->last_state;
-		self->priv->info = g_object_ref (info);
-	} else {
-		file_undo_manager_clear (self);
-	}
+        self->priv->info = g_object_ref (info);
+    }
+    else if (user_cancel)
+    {
+        self->priv->state = self->priv->last_state;
+        self->priv->info = g_object_ref (info);
+    }
+    else
+    {
+        file_undo_manager_clear (self);
+    }
 
-	g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
+    g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
 }
 
 static void
 do_undo_redo (NautilusFileUndoManager *self,
-	      GtkWindow *parent_window)
+              GtkWindow               *parent_window)
 {
-	gboolean undo = self->priv->state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
+    gboolean undo = self->priv->state == NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
 
-	self->priv->last_state = self->priv->state;
+    self->priv->last_state = self->priv->state;
 
-	self->priv->is_operating = TRUE;
-	nautilus_file_undo_info_apply_async (self->priv->info, undo, parent_window,
-					     undo_info_apply_ready, self);
+    self->priv->is_operating = TRUE;
+    nautilus_file_undo_info_apply_async (self->priv->info, undo, parent_window,
+                                         undo_info_apply_ready, self);
 
-	/* clear actions while undoing */
-	file_undo_manager_clear (self);
-	g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
+    /* clear actions while undoing */
+    file_undo_manager_clear (self);
+    g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
 }
 
 void
 nautilus_file_undo_manager_redo (GtkWindow *parent_window)
 {
-	NautilusFileUndoManager *self = get_singleton ();
+    NautilusFileUndoManager *self = get_singleton ();
 
-	if (self->priv->state != NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO) {
-		g_warning ("Called redo, but state is %s!", self->priv->state == 0 ?
-			   "none" : "undo");
-		return;
-	}
+    if (self->priv->state != NAUTILUS_FILE_UNDO_MANAGER_STATE_REDO)
+    {
+        g_warning ("Called redo, but state is %s!", self->priv->state == 0 ?
+                   "none" : "undo");
+        return;
+    }
 
-	do_undo_redo (self, parent_window);
+    do_undo_redo (self, parent_window);
 }
 
 void
 nautilus_file_undo_manager_undo (GtkWindow *parent_window)
 {
-	NautilusFileUndoManager *self = get_singleton ();
+    NautilusFileUndoManager *self = get_singleton ();
 
-	if (self->priv->state != NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO) {
-		g_warning ("Called undo, but state is %s!", self->priv->state == 0 ?
-			   "none" : "redo");
-		return;
-	}
+    if (self->priv->state != NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO)
+    {
+        g_warning ("Called undo, but state is %s!", self->priv->state == 0 ?
+                   "none" : "redo");
+        return;
+    }
 
-	do_undo_redo (self, parent_window);
+    do_undo_redo (self, parent_window);
 }
 
 void
 nautilus_file_undo_manager_set_action (NautilusFileUndoInfo *info)
 {
-	NautilusFileUndoManager *self = get_singleton ();
+    NautilusFileUndoManager *self = get_singleton ();
 
-	DEBUG ("Setting undo information %p", info);
+    DEBUG ("Setting undo information %p", info);
 
-	file_undo_manager_clear (self);
+    file_undo_manager_clear (self);
 
-	if (info != NULL) {
-		self->priv->info = g_object_ref (info);
-		self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
-		self->priv->last_state = NAUTILUS_FILE_UNDO_MANAGER_STATE_NONE;
-	}
+    if (info != NULL)
+    {
+        self->priv->info = g_object_ref (info);
+        self->priv->state = NAUTILUS_FILE_UNDO_MANAGER_STATE_UNDO;
+        self->priv->last_state = NAUTILUS_FILE_UNDO_MANAGER_STATE_NONE;
+    }
 
-	g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
+    g_signal_emit (self, signals[SIGNAL_UNDO_CHANGED], 0);
 }
 
 NautilusFileUndoInfo *
 nautilus_file_undo_manager_get_action (void)
 {
-	NautilusFileUndoManager *self = get_singleton ();
+    NautilusFileUndoManager *self = get_singleton ();
 
-	return self->priv->info;
+    return self->priv->info;
 }
 
-NautilusFileUndoManagerState 
+NautilusFileUndoManagerState
 nautilus_file_undo_manager_get_state (void)
 {
-	NautilusFileUndoManager *self = get_singleton ();
+    NautilusFileUndoManager *self = get_singleton ();
 
-	return self->priv->state;
+    return self->priv->state;
 }
 
 
 gboolean
 nautilus_file_undo_manager_is_operating ()
 {
-	NautilusFileUndoManager *self = get_singleton ();
-	return self->priv->is_operating;
+    NautilusFileUndoManager *self = get_singleton ();
+    return self->priv->is_operating;
 }
 
 NautilusFileUndoManager *
 nautilus_file_undo_manager_get ()
 {
-	return get_singleton ();
+    return get_singleton ();
 }

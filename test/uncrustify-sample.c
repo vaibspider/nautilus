@@ -17,8 +17,7 @@ static int    some_function ( int  *f  , char **c, LongTypeException a)      {
 	int d= - 10;    /* Space around assignment, No space between - and 10 */
 	int* b;         /* no space before the *, yes space between * and variable name */
 
-  some_function(
-		a,
+  some_function(		a,
 		b
 	)
 
