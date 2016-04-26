@@ -691,11 +691,14 @@ reveal_icon (NautilusCanvasContainer *container,
 	GtkAdjustment *hadj, *vadj;
 	EelIRect bounds;
 
+        g_print ("REVEAL ICON\n");
 	if (!icon_is_positioned (icon)) {
+                g_print ("icon not positioned\n");
 		set_pending_icon_to_reveal (container, icon);
 		return;
 	}
 	
+                g_print ("icon positioned\n");
 	set_pending_icon_to_reveal (container, NULL);
 
 	gtk_widget_get_allocation (GTK_WIDGET (container), &allocation);
@@ -709,6 +712,7 @@ reveal_icon (NautilusCanvasContainer *container,
 	} else {
 		item_get_canvas_bounds (EEL_CANVAS_ITEM (icon->item), &bounds);
 	}
+  g_print ("bounds %d %d\n", bounds.y0, bounds.x0);
 	if (bounds.y0 < gtk_adjustment_get_value (vadj)) {
 		gtk_adjustment_set_value (vadj, bounds.y0);
 	} else if (bounds.y1 > gtk_adjustment_get_value (vadj) + allocation.height) {
@@ -6557,10 +6561,12 @@ nautilus_canvas_container_set_selection (NautilusCanvasContainer *container,
 	hash = g_hash_table_new (NULL, NULL);
 	for (p = selection; p != NULL; p = p->next) {
 		g_hash_table_insert (hash, p->data, p->data);
+                g_print ("BEFORE se;ection %s\n", nautilus_file_get_uri (NAUTILUS_FILE (p->data)));
 	}
 	for (p = container->details->icons; p != NULL; p = p->next) {
 		icon = p->data;
 		
+                g_print ("after se;ection %s %d\n", nautilus_file_get_uri (NAUTILUS_FILE (icon->data)), g_hash_table_lookup (hash, icon->data) != NULL);
 		res = icon_set_selected
 			(container, icon,
 			 g_hash_table_lookup (hash, icon->data) != NULL);

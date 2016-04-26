@@ -603,6 +603,8 @@ nautilus_files_view_reveal_selection (NautilusFilesView *view)
 {
         g_return_if_fail (NAUTILUS_IS_FILES_VIEW (view));
 
+  g_print ("##### reveals selection\n");
+  G_BREAKPOINT ();
         NAUTILUS_FILES_VIEW_CLASS (G_OBJECT_GET_CLASS (view))->reveal_selection (view);
 }
 
@@ -1877,18 +1879,51 @@ create_folder_on_name_accepted (gpointer user_data)
 }
 
 static void
+rename_file_on_rename_done (NautilusFile *file,
+                             GFile        *result_location,
+                             GError       *error,
+                             gpointer      callback_data)
+{
+        FileNameWidgetData *data = (FileNameWidgetData *) callback_data;
+
+        g_print ("rename file done %p %s\n", data->view, nautilus_file_get_uri (data->target_file));
+        if (data->view && data->target_file) {
+                nautilus_files_view_select_file (data->view, data->target_file);
+                nautilus_files_view_reveal_selection (data->view);
+        }
+
+        if (data->view) {
+                g_object_remove_weak_pointer (G_OBJECT (data->view),
+                                              (gpointer) &data->view);
+        }
+
+        if (data->target_file) {
+                g_object_remove_weak_pointer (G_OBJECT (data->target_file),
+                                              (gpointer) &data->target_file);
+        }
+
+        g_free (data);
+}
+
+static void
 rename_file_on_name_accepted (gpointer user_data)
 {
         FileNameWidgetData *data;
+        FileNameWidgetData *rename_done_data;
         gchar *name;
 
         data = (FileNameWidgetData *) user_data;
+        rename_done_data = g_new (FileNameWidgetData, 1);
+        rename_done_data->view = data->view;
+        g_object_add_weak_pointer (G_OBJECT (rename_done_data->view),
+                                   (gpointer) &rename_done_data->view);
+        rename_done_data->target_file = data->target_file;
+        g_object_add_weak_pointer (G_OBJECT (rename_done_data->target_file),
+                                   (gpointer) &rename_done_data->target_file);
 
         name = g_strstrip (g_strdup (gtk_entry_get_text (GTK_ENTRY (data->name_entry))));
-        nautilus_rename_file (data->target_file, name, NULL, NULL);
-
-        nautilus_files_view_select_file (data->view, data->target_file);
-        nautilus_files_view_reveal_selection (data->view);
+        nautilus_rename_file (data->target_file, name,
+                              rename_file_on_rename_done, rename_done_data);
 
         gtk_widget_hide (data->widget);
 
@@ -3553,6 +3588,8 @@ on_end_file_changes (NautilusFilesView *view)
         nautilus_files_view_check_empty_states (view);
         /* If the view is empty, zoom slider and sort menu are insensitive */
         nautilus_files_view_update_toolbar_menus (view);
+                        nautilus_files_view_reveal_selection(view);
+  g_print ("end file changes\n");
 }
 
 static void
