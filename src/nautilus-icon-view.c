@@ -20,11 +20,13 @@
 
 #include "nautilus-icon-view.h"
 #include "nautilus-files-view.h"
+#include "nautilus-file.h"
+#include "nautilus-directory.h"
+#include "nautilus-global-preferences.h"
 
 #include <glib.h>
-#include <libnautilus-private/nautilus-file.h>
-#include <libnautilus-private/nautilus-directory.h>
-#include <libnautilus-private/nautilus-global-preferences.h>
+
+static int n_files = 0;
 
 typedef struct
 {
@@ -59,6 +61,7 @@ real_clear (NautilusFilesView *self)
   NautilusIconViewPrivate *priv = nautilus_icon_view_get_instance_private (self);
 
   g_list_store_remove_all (G_LIST_STORE (priv->model));
+  n_files = 0;
 }
 
 
@@ -239,6 +242,7 @@ real_add_file (NautilusFilesView *self,
 
   priv = nautilus_icon_view_get_instance_private (self);
 
+  g_print ("add file %d\n", g_list_model_get_n_items (priv->model));
   g_list_store_append (G_LIST_STORE (priv->model), file);
 }
 
@@ -383,6 +387,23 @@ create_widget_func (gpointer item,
   return child;
 }
 
+static void
+on_child_activated (GtkFlowBox      *flow_box,
+                    GtkFlowBoxChild *child,
+                    gpointer         user_data)
+{
+  NautilusIconView *self = NAUTILUS_ICON_VIEW (user_data);
+  NautilusIconViewPrivate *priv = nautilus_icon_view_get_instance_private (self);
+  NautilusFile *file;
+  g_autoptr (GList) list = NULL;
+
+  g_print ("###############ACTIVATED\n");
+  file = g_object_get_data (G_OBJECT (child), "file");
+  list = g_list_append (list, file);
+
+  nautilus_files_view_activate_files (NAUTILUS_FILES_VIEW (self), list, 0, TRUE);
+}
+
 NautilusIconView *
 nautilus_icon_view_new (NautilusWindowSlot *slot)
 {
@@ -462,6 +483,8 @@ nautilus_icon_view_init (NautilusIconView *self)
   gtk_widget_set_margin_right (priv->flow_box, 20);
   gtk_widget_set_margin_bottom (priv->flow_box, 20);
   gtk_widget_set_margin_left (priv->flow_box, 20);
+
+  g_signal_connect (priv->flow_box, "child-activated", (GCallback) on_child_activated, self);
 
   gtk_widget_show (priv->flow_box);
 
