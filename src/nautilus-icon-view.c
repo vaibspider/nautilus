@@ -233,17 +233,45 @@ real_sort_directories_first_changed (NautilusFilesView *self)
 {
 }
 
+static gpointer*
+convert_glist_to_array (GList *list)
+{
+  gpointer *array;
+  GList *l;
+  int i = 0;
+
+  g_return_val_if_fail (list != NULL, NULL);
+
+  array = g_malloc (g_list_length (list) * sizeof (list->data));
+
+  for (l = list; l != NULL; l = l->next, i++)
+    {
+      array[i] = l->data;
+    }
+
+  return array;
+}
+
 static void
-real_add_file (NautilusFilesView *self,
-               NautilusFile      *file,
-               NautilusDirectory *directory)
+real_add_files (NautilusFilesView *self,
+                GList             *files,
+                NautilusDirectory *directory)
 {
   NautilusIconViewPrivate *priv;
+  g_autofree gpointer *array = NULL;
 
   priv = nautilus_icon_view_get_instance_private (self);
 
-  g_print ("add file %d\n", g_list_model_get_n_items (priv->model));
-  g_list_store_append (G_LIST_STORE (priv->model), file);
+  clock_t start = clock() ;
+
+  g_print ("add file %d\n", g_list_length (files));
+  array = convert_glist_to_array (files);
+  g_list_store_splice (G_LIST_STORE (priv->model),
+                       g_list_model_get_n_items (priv->model),
+                       0, array, g_list_length (files));
+  clock_t end = clock() ;
+  double elapsed_time = (end-start)/(double)CLOCKS_PER_SEC ;
+  g_print ("add file finished %d %f\n", g_list_model_get_n_items (priv->model), elapsed_time);
 }
 
 
@@ -433,7 +461,7 @@ nautilus_icon_view_class_init (NautilusIconViewClass *klass)
 
   object_class->finalize = nautilus_icon_view_finalize;
 
-  files_view_class->add_file = real_add_file;
+  files_view_class->add_files = real_add_files;
   files_view_class->begin_loading = real_begin_loading;
   files_view_class->bump_zoom_level = real_bump_zoom_level;
   files_view_class->can_zoom_in = real_can_zoom_in;

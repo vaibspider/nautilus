@@ -87,6 +87,12 @@ struct NautilusFilesViewClass {
         void    (* add_file)                    (NautilusFilesView *view,
                                                  NautilusFile      *file,
                                                  NautilusDirectory *directory);
+        /* The 'add_files' signal is emitted to add a set of files to the view.
+         * It must be replaced by each subclass.
+         */
+        void    (* add_files)                    (NautilusFilesView *view,
+                                                  GList             *files,
+                                                  NautilusDirectory *directory);
         void    (* remove_file)                 (NautilusFilesView *view,
                                                  NautilusFile      *file,
                                                  NautilusDirectory *directory);
