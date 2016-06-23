@@ -272,6 +272,8 @@ nautilus_no_main_sources = \
 	nautilus-file-conflict-dialog.c \
 	nautilus-file-conflict-dialog.h \
 	nautilus-file-operations.c \
+	nautilus-operations-manager.h \
+	nautilus-operations-manager.c \
 	nautilus-file-operations.h \
 	nautilus-file-private.h \
 	nautilus-file-queue.c \

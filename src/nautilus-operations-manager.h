@@ -1,0 +1,17 @@
+#ifndef NAUTILUS_OPERATIONS_MANAGER_H
+#define NAUTILUS_OPERATIONS_MANAGER_H
+
+
+typedef struct {
+    int id;
+    char *new_name;
+    gboolean apply_to_all;
+} FileConflictResponse;
+
+
+FileConflictResponse * get_copy_move_file_conflict_response (GtkWindow *parent_window,
+                                                             GFile     *src,
+                                                             GFile     *dest,
+                                                             GFile     *dest_dir);
+
+#endif
