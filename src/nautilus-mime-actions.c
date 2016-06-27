@@ -43,6 +43,7 @@
 #include "nautilus-program-choosing.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-signaller.h"
+#include "nautilus-application.h"
 
 #define DEBUG_FLAG NAUTILUS_DEBUG_MIME
 #include "nautilus-debug.h"
@@ -54,6 +55,7 @@ typedef enum {
 	ACTIVATION_ACTION_LAUNCH_IN_TERMINAL,
 	ACTIVATION_ACTION_OPEN_IN_VIEW,
 	ACTIVATION_ACTION_OPEN_IN_APPLICATION,
+        ACTIVATION_ACTION_EXTRACT,
 	ACTIVATION_ACTION_DO_NOTHING,
 } ActivationAction;
 
@@ -677,6 +679,13 @@ get_activation_action (NautilusFile *file)
 {
 	ActivationAction action;
 	char *activation_uri;
+        gboolean can_extract;
+        can_extract =  g_settings_get_boolean (nautilus_preferences,
+                                               NAUTILUS_PREFERENCES_AUTOMATIC_DECOMPRESSION);
+
+        if (can_extract && nautilus_file_is_archive (file)) {
+                return ACTIVATION_ACTION_EXTRACT;
+        }
 
 	if (nautilus_file_is_nautilus_link (file)) {
 		return ACTIVATION_ACTION_LAUNCH_DESKTOP_FILE;
@@ -712,6 +721,12 @@ get_activation_action (NautilusFile *file)
 	g_free (activation_uri);
 
 	return action;
+}
+
+gboolean
+nautilus_mime_file_extracts (NautilusFile *file)
+{
+        return get_activation_action (file) == ACTIVATION_ACTION_EXTRACT;
 }
 
 gboolean
@@ -1506,6 +1521,7 @@ activate_files (ActivateParameters *parameters)
 	GList *open_in_app_uris;
 	GList *open_in_app_parameters;
 	GList *unhandled_open_in_app_uris;
+        GList *extract_files;
 	ApplicationLaunchParameters *one_parameters;
 	GList *open_in_view_files;
 	GList *l;
@@ -1528,6 +1544,7 @@ activate_files (ActivateParameters *parameters)
 	launch_in_terminal_files = NULL;
 	open_in_app_uris = NULL;
 	open_in_view_files = NULL;
+        extract_files = NULL;
 
 	for (l = parameters->locations; l != NULL; l = l->next) {
 		location = l->data;
@@ -1560,6 +1577,9 @@ activate_files (ActivateParameters *parameters)
 		case ACTIVATION_ACTION_OPEN_IN_VIEW :
 			open_in_view_files = g_list_prepend (open_in_view_files, file);
 			break;
+                case ACTIVATION_ACTION_EXTRACT :
+                        extract_files = g_list_prepend (extract_files, file);
+                        break;
 		case ACTIVATION_ACTION_OPEN_IN_APPLICATION :
 			open_in_app_uris = g_list_prepend (open_in_app_uris, location->uri);
 			break;
@@ -1673,6 +1693,24 @@ activate_files (ActivateParameters *parameters)
 			g_free (uri);
 		}
 	}
+
+        extract_files = g_list_reverse (extract_files);
+        if (extract_files) {
+                for (l = extract_files; l != NULL; l = l->next) {
+                        file = NAUTILUS_FILE (l->data);
+                        g_autoptr (GFile) source;
+                        g_autoptr (GFile) output;
+
+                        source = nautilus_file_get_location (file);
+                        output = nautilus_file_get_parent_location (file);
+
+                        nautilus_file_operations_extract (source,
+                                                          output,
+                                                          parameters->parent_window,
+                                                          NULL,
+                                                          NULL);
+                }
+        }
 
 	open_in_app_parameters = NULL;
 	unhandled_open_in_app_uris = NULL;

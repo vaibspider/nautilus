@@ -120,6 +120,42 @@ set_copy_move_dialog_text (FileConflictDialogData *data)
 }
 
 static void
+set_extract_dialog_text (FileConflictDialogData *data)
+{
+
+        g_autofree gchar *primary_text = NULL;
+        g_autofree gchar *secondary_text = NULL;
+        const gchar *message_extra;
+        g_autofree gchar *message = NULL;
+        g_autofree gchar *dest_name;
+        g_autofree gchar *dest_dir_name;
+
+        dest_name = nautilus_file_get_display_name (data->destination);
+        dest_dir_name = nautilus_file_get_display_name (data->dest_dir);
+
+        if (nautilus_file_is_directory (data->destination)) {
+                primary_text = g_strdup_printf (_("Replace folder “%s”?"), dest_name);
+                message = g_strdup_printf
+                        (_("A folder with the same name as the extract destination already exists in “%s”."),
+                         dest_dir_name);
+                message_extra =
+                        _("Replacing it will remove all files in the folder.");
+        } else {
+                primary_text = g_strdup_printf (_("Replace file “%s”?"), dest_name);
+                message = g_strdup_printf
+                        (_("A file with the same name as the extract destination already exists in “%s”."),
+                         dest_dir_name);
+                message_extra = _("Replacing it will overwrite its content.");
+        }
+
+        secondary_text = g_strdup_printf ("%s\n%s", message, message_extra);
+
+        nautilus_file_conflict_dialog_set_text (data->dialog,
+                                                primary_text,
+                                                secondary_text);
+}
+
+static void
 set_images (FileConflictDialogData *data)
 {
         GdkPixbuf *source_pixbuf;
@@ -298,6 +334,36 @@ copy_move_file_list_ready_cb (GList    *files,
 }
 
 static void
+extract_file_list_ready_cb (GList    *files,
+                            gpointer  user_data)
+{
+        FileConflictDialogData *data = user_data;
+
+        data->handle = NULL;
+
+        gtk_window_set_title (GTK_WINDOW (data->dialog), _("Extract conflict"));
+
+        set_extract_dialog_text (data);
+
+        set_images (data);
+
+        set_file_labels (data);
+
+        set_conflict_name (data);
+
+        nautilus_file_conflict_dialog_disable_skip (data->dialog);
+        nautilus_file_conflict_dialog_disable_apply_to_all (data->dialog);
+
+        nautilus_file_monitor_add (data->source, data, NAUTILUS_FILE_ATTRIBUTES_FOR_ICON);
+        nautilus_file_monitor_add (data->destination, data, NAUTILUS_FILE_ATTRIBUTES_FOR_ICON);
+
+        data->src_handler_id = g_signal_connect (data->source, "changed",
+                          G_CALLBACK (file_icons_changed), data);
+        data->dest_handler_id = g_signal_connect (data->destination, "changed",
+                          G_CALLBACK (file_icons_changed), data);
+}
+
+static void
 build_dialog_appearance (FileConflictDialogData *data)
 {
         GList *files = NULL;
@@ -417,4 +483,89 @@ get_copy_move_file_conflict_response (GtkWindow *parent_window,
         data->files_list_ready_cb = copy_move_file_list_ready_cb;
 
         return get_file_conflict_response (data);
+}
+
+FileConflictResponse *
+get_extract_file_conflict_response (GtkWindow *parent_window,
+                                    GFile     *src_name,
+                                    GFile     *dest_name,
+                                    GFile     *dest_dir_name)
+{
+        FileConflictDialogData *data;
+
+        data = g_slice_new0 (FileConflictDialogData);
+        data->parent = parent_window;
+        data->src_name = src_name;
+        data->dest_name = dest_name;
+        data->dest_dir_name = dest_dir_name;
+
+        data->files_list_ready_cb = extract_file_list_ready_cb;
+
+        return get_file_conflict_response (data);
+}
+
+typedef struct {
+        GFile *source;
+
+        GtkWindow *parent;
+
+        NameConflictResponse *response;
+
+        GtkWidget *dialog;
+        /* Dialogs are ran from operation threads, which need to be blocked until
+         * the user gives a valid response
+         */
+        gboolean completed;
+        GMutex mutex;
+        GCond cond;
+} NameConflictData;
+
+static gboolean
+run_name_conflict_dialog (gpointer _data)
+{
+        NameConflictData *data = _data;
+
+
+
+
+        return FALSE;
+}
+
+
+NameConflictResponse *
+get_extract_name_conflict_response (GtkWindow *parent_window,
+                                    GFile     *source)
+{
+        NameConflictData *data;
+        NameConflictResponse *response;
+
+        data = g_slice_new0 (NameConflictData);
+        data->parent = parent_window;
+        data->source = source;
+
+        response = g_slice_new0 (NameConflictResponse);
+        response->new_name = NULL;
+        data->response = response;
+
+        data->completed = FALSE;
+        g_mutex_init (&data->mutex);
+        g_cond_init (&data->cond);
+
+        g_mutex_lock (&data->mutex);
+
+        g_main_context_invoke (NULL,
+                               run_name_conflict_dialog,
+                               data);
+
+        while (!data->completed) {
+                g_cond_wait (&data->cond, &data->mutex);
+        }
+
+        g_mutex_unlock (&data->mutex);
+        g_mutex_clear (&data->mutex);
+        g_cond_clear (&data->cond);
+
+        g_slice_free (NameConflictData, data);
+
+        return response;
 }

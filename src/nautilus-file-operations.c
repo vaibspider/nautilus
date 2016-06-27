@@ -51,6 +51,8 @@
 #include <gtk/gtk.h>
 #include <gio/gio.h>
 #include <glib.h>
+#include <gnome-autoar/autoar.h>
+
 #include "nautilus-operations-manager.h"
 #include "nautilus-file-changes-queue.h"
 #include "nautilus-file-private.h"
@@ -61,6 +63,7 @@
 #include "nautilus-file-conflict-dialog.h"
 #include "nautilus-file-undo-operations.h"
 #include "nautilus-file-undo-manager.h"
+#include "nautilus-application.h"
 
 /* TODO: TESTING!!! */
 
@@ -169,6 +172,23 @@ typedef struct {
 	guint64 last_report_time;
 	int last_reported_files_left;
 } TransferInfo;
+
+typedef struct {
+        CommonJob common;
+        GFile *source;
+        GFile *output;
+
+	NautilusExtractCallback done_callback;
+	gpointer done_callback_data;
+
+	AutoarExtract *arextract;
+
+	GFile *confirmed_destination;
+	gboolean success;
+
+        guint64 total_size;
+        guint total_files;
+} ExtractJob;
 
 #define SECONDS_NEEDED_FOR_RELIABLE_TRANSFER_RATE 8
 #define NSEC_PER_MICROSEC 1000
@@ -1838,7 +1858,7 @@ delete_files (CommonJob *job, GList *files, int *files_skipped)
 	SourceInfo source_info;
 	TransferInfo transfer_info;
 	gboolean skipped_file;
-	
+
 	if (job_aborted (job)) {
 		return;
 	}
@@ -5780,7 +5800,7 @@ link_file (CopyMoveJob *job,
 			g_object_unref (new_dest);
 		}
 	}
-	/* Conflict */
+	/* FileConflict */
 	if (error != NULL && IS_IO_ERROR (error, EXISTS)) {
 		g_object_unref (dest);
 		dest = get_target_file_for_link (src, dest_dir, *dest_fs_type, count++);
@@ -7106,6 +7126,400 @@ nautilus_file_mark_desktop_file_trusted (GFile *file,
 	g_task_set_task_data (task, job, NULL);
 	g_task_run_in_thread (task, mark_trusted_task_thread_func);
 	g_object_unref (task);
+}
+
+static FileConflictResponse *
+signal_extract_conflict (CommonJob *job,
+                         GFile *src,
+                         GFile *dest,
+                         GFile *dest_dir)
+{
+        FileConflictResponse *response;
+
+        g_timer_stop (job->time);
+        nautilus_progress_info_pause (job->progress);
+
+        response = get_extract_file_conflict_response (job->parent_window,
+                                                       src,
+                                                       dest,
+                                                       dest_dir);
+
+        nautilus_progress_info_resume (job->progress);
+        g_timer_continue (job->time);
+
+        return response;
+}
+
+static gboolean
+remove_file (GFile *file,
+             GError **error)
+{
+        gboolean success = TRUE;
+        g_autoptr (GFileEnumerator) enumerator = NULL;
+
+        if (g_file_delete (file, NULL, error)) {
+                return TRUE;
+        }
+
+        if (g_error_matches (*error, G_IO_ERROR, G_IO_ERROR_NOT_EMPTY)) {
+                g_clear_error (error);
+        } else {
+                return FALSE;
+        }
+
+        enumerator = g_file_enumerate_children (file,
+                                                G_FILE_ATTRIBUTE_STANDARD_NAME,
+                                                G_FILE_QUERY_INFO_NONE,
+                                                NULL, error);
+
+        if (enumerator) {
+                GFileInfo *info;
+
+                while ((info = g_file_enumerator_next_file (enumerator, NULL, error)) != NULL) {
+                        g_autoptr(GFile) child;
+
+                        child = g_file_get_child (file, g_file_info_get_name (info));
+
+                        success = remove_file (child, error);
+
+                        g_object_unref (info);
+
+                        if (!success) {
+                                return FALSE;
+                        }
+                }
+        } else {
+                return FALSE;
+        }
+
+        g_file_delete (file, NULL, error);
+
+        return success && *error == NULL;
+}
+
+static void
+extract_task_done (GObject *source_object,
+                   GAsyncResult *res,
+                   gpointer user_data)
+{
+        ExtractJob *extract_job = user_data;
+
+        if (extract_job->done_callback) {
+                extract_job->done_callback (extract_job->source,
+                                            extract_job->confirmed_destination,
+                                            extract_job->success,
+                                            extract_job->done_callback_data);
+        }
+
+        g_clear_object (&extract_job->source);
+        g_clear_object (&extract_job->output);
+        g_clear_object (&extract_job->arextract);
+        g_clear_object (&extract_job->confirmed_destination);
+
+        finalize_common ((CommonJob *)extract_job);
+}
+
+static void
+extract_scanned_handler (AutoarExtract *arextract,
+                         guint          files_count,
+                         gpointer       user_data)
+{
+        ExtractJob *extract_job = user_data;
+
+        extract_job->total_files = autoar_extract_get_files (arextract);
+        extract_job->total_size = autoar_extract_get_size (arextract);
+}
+
+static GFile*
+extract_confirm_dest_handler (AutoarExtract *arextract,
+                              GFile         *destination,
+                              GList         *files,
+                              gpointer       user_data)
+{
+        ExtractJob *extract_job = user_data;
+        GFileType file_type;
+        g_autoptr (GFile) destination_directory;
+        GFile *confirmed_destination = NULL;
+
+        nautilus_progress_info_set_details (extract_job->common.progress,
+                                            _("Checking destination"));
+
+        destination_directory = g_file_get_parent (destination);
+
+        confirmed_destination = g_object_ref (destination);
+        file_type = g_file_query_file_type (confirmed_destination,
+                                            G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,
+                                            NULL);
+
+        while (file_type != G_FILE_TYPE_UNKNOWN) {
+                FileConflictResponse *response;
+                GError *error = NULL;
+
+                response = signal_extract_conflict ((CommonJob *)extract_job,
+                                                    extract_job->source,
+                                                    confirmed_destination,
+                                                    destination_directory);
+
+                switch (response->id) {
+                        case GTK_RESPONSE_CANCEL:
+                        case GTK_RESPONSE_DELETE_EVENT:
+                                g_cancellable_cancel (extract_job->common.cancellable);
+
+                                conflict_response_data_free (response);
+
+                                goto out;
+                        case CONFLICT_RESPONSE_REPLACE:
+                                nautilus_progress_info_set_details (extract_job->common.progress,
+                                                                    _("Replacing existing destination"));
+
+                                if (!remove_file (confirmed_destination, &error)) {
+                                        run_error ((CommonJob *)extract_job,
+                                                   f (_("Error while extracting “%B”."),
+                                                      extract_job->source),
+                                                   f (_("The existing destination “%B” could not be replaced."),
+                                                      confirmed_destination),
+                                                   error->message,
+                                                   FALSE,
+                                                   CANCEL,
+                                                   NULL);
+
+                                	g_cancellable_cancel (extract_job->common.cancellable);
+
+                                        g_error_free (error);
+                                }
+
+        			conflict_response_data_free (response);
+
+                                goto out;
+                        case CONFLICT_RESPONSE_RENAME:
+                                g_clear_object (&confirmed_destination);
+
+                                confirmed_destination = get_target_file_for_display_name (destination_directory,
+                                                                                          response->new_name);
+
+                                break;
+                        default:
+                                g_assert_not_reached ();
+                }
+
+                file_type = g_file_query_file_type (confirmed_destination,
+                                                    G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,
+                                                    NULL);
+
+                conflict_response_data_free (response);
+
+        }
+out:
+	extract_job->confirmed_destination = confirmed_destination;
+
+        if (confirmed_destination != NULL) {
+                g_object_ref (confirmed_destination);
+        }
+
+        return confirmed_destination;
+}
+
+static void
+extract_progress_handler (AutoarExtract *arextract,
+                          guint64        completed_size,
+                          guint          completed_files,
+                          gpointer       user_data)
+{
+        ExtractJob *extract_job = user_data;
+        CommonJob *common = user_data;
+        char *details;
+        int files_left;
+        double elapsed, transfer_rate;
+        int remaining_time;
+
+        files_left = extract_job->total_files - completed_files;
+
+        nautilus_progress_info_take_status (common->progress,
+                                            f (_("Extracting “%B”"), extract_job->source));
+
+        elapsed = g_timer_elapsed (common->time, NULL);
+        transfer_rate = 0;
+        remaining_time = INT_MAX;
+        if (elapsed > 0) {
+                transfer_rate = completed_size / elapsed;
+                if (transfer_rate > 0) {
+                        remaining_time = (extract_job->total_size - completed_size) / transfer_rate;
+                }
+        }
+
+        if (transfer_rate == 0) {
+                transfer_rate = completed_files / elapsed;
+                if (transfer_rate > 0) {
+                        remaining_time = (extract_job->total_files - completed_files) / transfer_rate;
+                }
+        }
+
+        if (elapsed < SECONDS_NEEDED_FOR_RELIABLE_TRANSFER_RATE &&
+            transfer_rate > 0) {
+                if (extract_job->total_files == 1) {
+                        /* To translators: %S will expand to a size like "2 bytes" or "3 MB", so something like "4 kb / 4 MB" */
+                        details = f (_("%S / %S"), completed_size, extract_job->total_size);
+                } else {
+                        details = f (_("%'d / %'d"),
+                                     files_left > 0 ? completed_files + 1 : completed_files,
+                                     extract_job->total_files);
+                }
+        } else {
+                if (extract_job->total_files == 1) {
+                        if (files_left > 0) {
+                                /* To translators: %S will expand to a size like "2 bytes" or "3 MB", %T to a time duration like
+                                 * "2 minutes". So the whole thing will be something like "2 kb / 4 MB -- 2 hours left (4kb/sec)"
+                                 *
+                                 * The singular/plural form will be used depending on the remaining time (i.e. the %T argument).
+                                 */
+                                details = f (ngettext ("%S / %S \xE2\x80\x94 %T left (%S/sec)",
+                                                       "%S / %S \xE2\x80\x94 %T left (%S/sec)",
+                                                       seconds_count_format_time_units (remaining_time)),
+                                             completed_size, extract_job->total_size,
+                                             remaining_time,
+                                             (goffset)transfer_rate);
+                        } else {
+                                /* To translators: %S will expand to a size like "2 bytes" or "3 MB". */
+                                details = f (_("%S / %S"),
+                                             completed_size,
+                                             extract_job->total_size);
+                        }
+                } else {
+                        if (files_left > 0) {
+                                /* To translators: %T will expand to a time duration like "2 minutes".
+                                 * So the whole thing will be something like "1 / 5 -- 2 hours left (4kb/sec)"
+                                 *
+                                 * The singular/plural form will be used depending on the remaining time (i.e. the %T argument).
+                                 */
+                                details = f (ngettext ("%'d / %'d \xE2\x80\x94 %T left (%S/sec)",
+                                                       "%'d / %'d \xE2\x80\x94 %T left (%S/sec)",
+                                                       seconds_count_format_time_units (remaining_time)),
+                                             completed_files + 1, extract_job->total_files,
+                                             remaining_time,
+                                             (goffset)transfer_rate);
+                        } else {
+                                /* To translators: %'d is the number of files completed for the operation,
+                                 * so it will be something like 2/14. */
+                                details = f (_("%'d / %'d"),
+                                             completed_files,
+                                             extract_job->total_files);
+                        }
+                }
+        }
+
+        nautilus_progress_info_take_details (common->progress, details);
+
+        if (elapsed > SECONDS_NEEDED_FOR_APROXIMATE_TRANSFER_RATE) {
+                nautilus_progress_info_set_remaining_time (common->progress,
+                                                           remaining_time);
+                nautilus_progress_info_set_elapsed_time (common->progress,
+                                                         elapsed);
+        }
+
+        nautilus_progress_info_set_progress (common->progress,
+                                             completed_size,
+                                             extract_job->total_size);
+}
+
+static void
+extract_error_handler (AutoarExtract *arextract,
+                       GError *error,
+                       gpointer user_data)
+{
+        ExtractJob *extract_job = user_data;
+
+        nautilus_progress_info_take_status (extract_job->common.progress,
+                                            f (_("Error extracting “%B””"),
+                                               extract_job->source));
+
+        run_error ((CommonJob *)extract_job,
+                   f (_("There was an error while extracting “%B”."),
+                      extract_job->source),
+                   g_strdup (error->message),
+                   NULL,
+                   FALSE,
+                   CANCEL,
+                   NULL);
+}
+
+static void
+extract_completed_handler (AutoarExtract *arextract,
+        	           gpointer user_data)
+{
+        ExtractJob *extract_job = user_data;
+
+        extract_job->success = TRUE;
+
+        nautilus_progress_info_take_status (extract_job->common.progress,
+                                            f (_("Finished extracting “%B” to “%B”"),
+                                               extract_job->source,
+                                               extract_job->confirmed_destination));
+
+        nautilus_progress_info_set_destination (extract_job->common.progress,
+        					extract_job->confirmed_destination);
+}
+
+static void
+extract_task_thread_func (GTask        *task,
+                          gpointer      source_object,
+                          gpointer      task_data,
+                          GCancellable *cancellable)
+{
+        ExtractJob *extract_job = task_data;
+        AutoarPref *arpref;
+
+        arpref = nautilus_application_get_arpref (nautilus_application_get_default ());
+
+        extract_job->arextract = autoar_extract_new_file (extract_job->source,
+                                                          extract_job->output,
+                                                          arpref);
+
+        autoar_extract_set_notify_interval (extract_job->arextract, 100000);
+
+        g_signal_connect (extract_job->arextract, "scanned",
+                          G_CALLBACK (extract_scanned_handler), extract_job);
+        g_signal_connect (extract_job->arextract, "error",
+                          G_CALLBACK (extract_error_handler), extract_job);
+        g_signal_connect (extract_job->arextract, "confirm-dest",
+                          G_CALLBACK (extract_confirm_dest_handler), extract_job);
+        g_signal_connect (extract_job->arextract, "progress",
+                          G_CALLBACK (extract_progress_handler), extract_job);
+        g_signal_connect (extract_job->arextract, "completed",
+                          G_CALLBACK (extract_completed_handler), extract_job);
+
+        g_timer_start (extract_job->common.time);
+
+        nautilus_progress_info_start (extract_job->common.progress);
+
+        nautilus_progress_info_set_details (extract_job->common.progress,
+                                            _("Scanning archive contents"));
+
+        autoar_extract_start (extract_job->arextract, extract_job->common.cancellable);
+}
+
+void
+nautilus_file_operations_extract (GFile                   *source,
+                                  GFile                   *output,
+                                  GtkWindow               *parent_window,
+                                  NautilusExtractCallback  done_callback,
+                                  gpointer 		   done_callback_data)
+{
+        GTask *task;
+        ExtractJob *job;
+
+        job = op_job_new (ExtractJob, parent_window);
+        job->source = g_object_ref (source);
+        job->output = g_object_ref (output);
+        job->done_callback = done_callback;
+        job->done_callback = done_callback_data;
+        job->success = FALSE;
+
+        inhibit_power_manager ((CommonJob *)job, _("Extracting Files"));
+
+        task = g_task_new (NULL, job->common.cancellable, extract_task_done, job);
+        g_task_set_task_data (task, job, NULL);
+        g_task_run_in_thread (task, extract_task_thread_func);
+        g_object_unref (task);
 }
 
 #if !defined (NAUTILUS_OMIT_SELF_CHECK)
