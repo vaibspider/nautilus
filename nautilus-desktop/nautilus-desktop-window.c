@@ -45,6 +45,7 @@ struct NautilusDesktopWindowDetails {
 	gboolean loaded;
 
 	GtkWidget *desktop_selection;
+  GdkWindow *root_window;
 };
 
 G_DEFINE_TYPE (NautilusDesktopWindow, nautilus_desktop_window, 
@@ -166,6 +167,142 @@ nautilus_desktop_window_init_selection (NautilusDesktopWindow *window)
 	window->details->desktop_selection = selection_widget;
 }
 
+static GdkRectangle*
+intersect_primary_monitor_with_workareas (NautilusDesktopWindow *window,
+                                          long                  *workareas,
+                                          int                    n_items)
+{
+	int i;
+	GdkRectangle geometry;
+	GdkRectangle *intersected_geometry;
+
+        intersected_geometry = g_new (GdkRectangle, 1);
+	gdk_screen_get_monitor_geometry (gdk_screen_get_default (),
+                                         gdk_screen_get_primary_monitor (gdk_screen_get_default ()),
+                                         &geometry);
+        intersected_geometry->x = geometry.x;
+        intersected_geometry->y = geometry.y;
+        intersected_geometry->width = geometry.width;
+        intersected_geometry->height = geometry.height;
+
+	for (i = 0; i < n_items; i += 4) {
+		GdkRectangle workarea;
+
+		workarea.x = workareas[i];
+		workarea.y = workareas[i + 1];
+		workarea.width = workareas[i + 2];
+		workarea.height = workareas[i + 3];
+
+                g_print ("owrkarea %d %d %d %d, intersected %d %d %d %d\n", workarea.x, workarea.y, workarea.width, workarea.height, intersected_geometry->x, intersected_geometry->y,
+                         intersected_geometry->width, intersected_geometry->height);
+		if (!gdk_rectangle_intersect (&geometry, &workarea, &workarea))
+			continue;
+
+		intersected_geometry->x = MAX (intersected_geometry->x, workarea.x);
+		intersected_geometry->y = MAX (intersected_geometry->y, workarea.y);
+		intersected_geometry->width = MIN (intersected_geometry->width,
+                                                   workarea.x + workarea.width - intersected_geometry->x);
+		intersected_geometry->height = MIN (intersected_geometry->height,
+                                                    workarea.y + workarea.height - intersected_geometry->y);
+	}
+
+  return intersected_geometry;
+}
+
+static GdkRectangle*
+calculate_size_desktop_geometry (NautilusDesktopWindow *window)
+{
+	long *nworkareas = NULL;
+	long *workareas = NULL;
+	GdkAtom type_returned;
+	int format_returned;
+	int length_returned;
+        GdkWindow *root_window;
+        GdkRectangle *intersected_geometry = NULL;
+
+        g_print ("calculate size desktop\n");
+        root_window = gdk_screen_get_root_window (gdk_screen_get_default ());
+	/* Find the number of desktops so we know how long the
+	 * workareas array is going to be (each desktop will have four
+	 * elements in the workareas array describing
+	 * x,y,width,height) */
+	gdk_error_trap_push ();
+	if (!gdk_property_get (root_window,
+			       gdk_atom_intern ("_NET_NUMBER_OF_DESKTOPS", FALSE),
+			       gdk_x11_xatom_to_atom (XA_CARDINAL),
+			       0, 4, FALSE,
+			       &type_returned,
+			       &format_returned,
+			       &length_returned,
+			       (guchar **) &nworkareas)) {
+		g_warning("Can not calculate _NET_NUMBER_OF_DESKTOPS");
+	}
+	if (gdk_error_trap_pop()
+	    || nworkareas == NULL
+	    || type_returned != gdk_x11_xatom_to_atom (XA_CARDINAL)
+	    || format_returned != 32)
+		g_warning("Can not calculate _NET_NUMBER_OF_DESKTOPS");
+
+	/* Note : gdk_property_get() is broken (API documents admit
+	 * this).  As a length argument, it expects the number of
+	 * _bytes_ of data you require.  Internally, gdk_property_get
+	 * converts that value to a count of 32 bit (4 byte) elements.
+	 * However, the length returned is in bytes, but is calculated
+	 * via the count of returned elements * sizeof(long).  This
+	 * means on a 64 bit system, the number of bytes you have to
+	 * request does not correspond to the number of bytes you get
+	 * back, and is the reason for the workaround below.
+	 */
+	gdk_error_trap_push ();
+	if (nworkareas == NULL || (*nworkareas < 1)
+	    || !gdk_property_get (root_window,
+				  gdk_atom_intern ("_NET_WORKAREA", FALSE),
+				  gdk_x11_xatom_to_atom (XA_CARDINAL),
+				  0, ((*nworkareas) * 4 * 4), FALSE,
+				  &type_returned,
+				  &format_returned,
+				  &length_returned,
+				  (guchar **) &workareas)) {
+		g_warning("Can not get _NET_WORKAREA");
+		workareas = NULL;
+	}
+
+	if (gdk_error_trap_pop ()
+	    || workareas == NULL
+	    || type_returned != gdk_x11_xatom_to_atom (XA_CARDINAL)
+	    || ((*nworkareas) * 4 * sizeof(long)) != length_returned
+	    || format_returned != 32) {
+              g_critical ("NET_WORKAREA canot be peeked");
+	} else {
+        g_print ("good good \n");
+                intersected_geometry = intersect_primary_monitor_with_workareas (window, workareas, *nworkareas);
+        }
+
+	if (nworkareas != NULL)
+		g_free (nworkareas);
+
+	if (workareas != NULL)
+		g_free (workareas);
+
+  return intersected_geometry;
+}
+
+static void
+net_workarea_changed (NautilusDesktopWindow *window)
+{
+  GdkRectangle *geometry;
+
+  geometry = calculate_size_desktop_geometry (window);
+  g_object_set (window,
+                "width_request", geometry->width,
+                "height_request", geometry->height,
+                NULL);
+
+  gtk_window_move (GTK_WINDOW (window), geometry->x, geometry->y);
+
+  g_free (geometry);
+}
+
 static void
 nautilus_desktop_window_constructed (GObject *obj)
 {
@@ -185,10 +322,10 @@ nautilus_desktop_window_constructed (GObject *obj)
 	gtk_window_set_decorated (GTK_WINDOW (window),
 				  FALSE);
 
-	gtk_window_move (GTK_WINDOW (window), 0, 0);
-
-	g_object_set_data (G_OBJECT (window), "is_desktop_window", 
+	g_object_set_data (G_OBJECT (window), "is_desktop_window",
 			   GINT_TO_POINTER (1));
+
+	net_workarea_changed (window);
 
 	nautilus_desktop_window_init_selection (window);
 	nautilus_desktop_window_init_actions (window);
@@ -218,6 +355,58 @@ nautilus_desktop_window_constructed (GObject *obj)
 	}
 }
 
+static GdkFilterReturn
+root_window_property_filter (GdkXEvent *gdk_xevent,
+				   GdkEvent *event,
+				   gpointer data)
+{
+	XEvent *xevent = gdk_xevent;
+	NautilusDesktopWindow *window;
+
+	window = NAUTILUS_DESKTOP_WINDOW (data);
+
+	switch (xevent->type) {
+	case PropertyNotify:
+		if (xevent->xproperty.atom == gdk_x11_get_xatom_by_name ("_NET_WORKAREA"))
+			net_workarea_changed (window);
+		break;
+	default:
+		break;
+	}
+
+	return GDK_FILTER_CONTINUE;
+}
+
+
+static void
+unrealized_callback (GtkWidget *widget,
+                     NautilusDesktopWindow *window)
+{
+	/* Remove the property filter */
+	gdk_window_remove_filter (gdk_screen_get_root_window (gdk_screen_get_default ()),
+				  root_window_property_filter,
+				  window);
+}
+
+static void
+realized_callback (GtkWidget *widget, NautilusDesktopWindow *window)
+{
+	GdkWindow *root_window;
+	GdkScreen *screen;
+
+	screen = gtk_widget_get_screen (widget);
+	root_window = gdk_screen_get_root_window (screen);
+
+	/* Read out the workarea geometry and update the icon container accordingly */
+	net_workarea_changed (window);
+
+	/* Setup the property filter */
+	gdk_window_set_events (root_window, GDK_PROPERTY_CHANGE_MASK);
+	gdk_window_add_filter (root_window,
+			       root_window_property_filter,
+			       window);
+}
+
 static void
 nautilus_desktop_window_init (NautilusDesktopWindow *window)
 {
@@ -226,42 +415,26 @@ nautilus_desktop_window_init (NautilusDesktopWindow *window)
 	gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (window)),
 				     "nautilus-desktop-window");
 
-}
+	g_signal_connect_object (window, "realize",
+				 G_CALLBACK (realized_callback), window, 0);
+	g_signal_connect_object (window, "unrealize",
+				 G_CALLBACK (unrealized_callback), window, 0);
 
-static void
-nautilus_desktop_window_screen_size_changed (GdkScreen             *screen,
-					     NautilusDesktopWindow *window)
-{
-	int width_request, height_request;
-
-	width_request = gdk_screen_get_width (screen);
-	height_request = gdk_screen_get_height (screen);
-	
-	g_object_set (window,
-		      "width_request", width_request,
-		      "height_request", height_request,
-		      NULL);
 }
 
 static NautilusDesktopWindow *
 nautilus_desktop_window_new (void)
 {
-	GdkScreen *screen;
 	GApplication *application;
 	NautilusDesktopWindow *window;
-	int width_request, height_request;
 
 	application = g_application_get_default ();
-	screen = gdk_screen_get_default ();
-	width_request = gdk_screen_get_width (screen);
-	height_request = gdk_screen_get_height (screen);
-
 	window = g_object_new (NAUTILUS_TYPE_DESKTOP_WINDOW,
 			       "application", application,
 			       "disable-chrome", TRUE,
-			       "width_request", width_request,
-			       "height_request", height_request,
 			       NULL);
+
+        net_workarea_changed (window);
 
 	return window;
 }
@@ -361,8 +534,8 @@ realize (GtkWidget *widget)
 	set_wmspec_desktop_hint (gtk_widget_get_window (widget));
 
 	details->size_changed_id =
-		g_signal_connect (gtk_window_get_screen (GTK_WINDOW (window)), "size-changed",
-				  G_CALLBACK (nautilus_desktop_window_screen_size_changed), window);
+		g_signal_connect_swapped (gtk_window_get_screen (GTK_WINDOW (window)), "size-changed",
+				  G_CALLBACK (net_workarea_changed), window);
 }
 
 static void

@@ -59,11 +59,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-struct NautilusDesktopCanvasViewDetails
-{
-	GdkWindow *root_window;
-};
-
 static void     default_zoom_level_changed                        (gpointer                user_data);
 static void     real_update_context_menus                         (NautilusFilesView           *view);
 static char*    real_get_backing_uri                              (NautilusFilesView           *view);
@@ -86,31 +81,31 @@ canvas_container_set_workarea (NautilusCanvasContainer *canvas_container,
 			     int                    n_items)
 {
 	int left, right, top, bottom;
-	int screen_width, screen_height;
 	int i;
+	GdkRectangle geometry;
 
 	left = right = top = bottom = 0;
-
-	screen_width  = gdk_screen_get_width (screen);
-	screen_height = gdk_screen_get_height (screen);
+	gdk_screen_get_monitor_geometry (screen, gdk_screen_get_primary_monitor (screen), &geometry);
 
 	for (i = 0; i < n_items; i += 4) {
-		int x      = workareas [i];
-		int y      = workareas [i + 1];
-		int width  = workareas [i + 2];
-		int height = workareas [i + 3];
+		GdkRectangle workarea;
 
-		if ((x + width) > screen_width || (y + height) > screen_height)
+		workarea.x = workareas[i];
+		workarea.y = workareas[i + 1];
+		workarea.width = workareas[i + 2];
+		workarea.height = workareas[i + 3];
+
+		if (!gdk_rectangle_intersect (&geometry, &workarea, &workarea))
 			continue;
 
-		left   = MAX (left, x);
-		right  = MAX (right, screen_width - width - x);
-		top    = MAX (top, y);
-		bottom = MAX (bottom, screen_height - height - y);
+		left   = MAX (left, workarea.x);
+		right  = MAX (right, (workarea.x + workarea.width) - (geometry.x + geometry.width));
+		top    = MAX (top, workarea.y);
+		bottom = MAX (bottom, (workarea.y + workarea.height) - (geometry.y + geometry.height));
 	}
 
 	nautilus_canvas_container_set_margins (canvas_container,
-					     left, right, top, bottom);
+					     0, 0, 0, 0);
 }
 
 static void
@@ -194,28 +189,6 @@ net_workarea_changed (NautilusDesktopCanvasView *canvas_view,
 
 	if (workareas != NULL)
 		g_free (workareas);
-}
-
-static GdkFilterReturn
-desktop_canvas_view_property_filter (GdkXEvent *gdk_xevent,
-				   GdkEvent *event,
-				   gpointer data)
-{
-	XEvent *xevent = gdk_xevent;
-	NautilusDesktopCanvasView *canvas_view;
-
-	canvas_view = NAUTILUS_DESKTOP_CANVAS_VIEW (data);
-  
-	switch (xevent->type) {
-	case PropertyNotify:
-		if (xevent->xproperty.atom == gdk_x11_get_xatom_by_name ("_NET_WORKAREA"))
-			net_workarea_changed (canvas_view, event->any.window);
-		break;
-	default:
-		break;
-	}
-
-	return GDK_FILTER_CONTINUE;
 }
 
 static guint
@@ -305,43 +278,6 @@ nautilus_desktop_canvas_view_class_init (NautilusDesktopCanvasViewClass *class)
 	vclass->end_loading = nautilus_desktop_canvas_view_end_loading;
 	vclass->get_backing_uri = real_get_backing_uri;
 	vclass->check_empty_states = real_check_empty_states;
-
-	g_type_class_add_private (class, sizeof (NautilusDesktopCanvasViewDetails));
-}
-
-static void
-unrealized_callback (GtkWidget *widget, NautilusDesktopCanvasView *desktop_canvas_view)
-{
-	g_return_if_fail (desktop_canvas_view->details->root_window != NULL);
-
-	/* Remove the property filter */
-	gdk_window_remove_filter (desktop_canvas_view->details->root_window,
-				  desktop_canvas_view_property_filter,
-				  desktop_canvas_view);
-	desktop_canvas_view->details->root_window = NULL;
-}
-
-static void
-realized_callback (GtkWidget *widget, NautilusDesktopCanvasView *desktop_canvas_view)
-{
-	GdkWindow *root_window;
-	GdkScreen *screen;
-
-	g_return_if_fail (desktop_canvas_view->details->root_window == NULL);
-
-	screen = gtk_widget_get_screen (widget);
-	root_window = gdk_screen_get_root_window (screen);
-
-	desktop_canvas_view->details->root_window = root_window;
-
-	/* Read out the workarea geometry and update the icon container accordingly */
-	net_workarea_changed (desktop_canvas_view, root_window);
-
-	/* Setup the property filter */
-	gdk_window_set_events (root_window, GDK_PROPERTY_CHANGE_MASK);
-	gdk_window_add_filter (root_window,
-			       desktop_canvas_view_property_filter,
-			       desktop_canvas_view);
 }
 
 static void
@@ -695,11 +631,6 @@ nautilus_desktop_canvas_view_init (NautilusDesktopCanvasView *desktop_canvas_vie
 
 	g_signal_connect_object (canvas_container, "realize",
 				 G_CALLBACK (desktop_canvas_container_realize), desktop_canvas_view, 0);
-
-	g_signal_connect_object (desktop_canvas_view, "realize",
-				 G_CALLBACK (realized_callback), desktop_canvas_view, 0);
-	g_signal_connect_object (desktop_canvas_view, "unrealize",
-				 G_CALLBACK (unrealized_callback), desktop_canvas_view, 0);
 
 	g_signal_connect_swapped (nautilus_icon_view_preferences,
 				  "changed::" NAUTILUS_PREFERENCES_ICON_VIEW_DEFAULT_ZOOM_LEVEL,
